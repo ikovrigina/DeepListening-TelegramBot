@@ -62,8 +62,8 @@ TELEGRAM_BOT_TOKEN=8272024094:AAHz8c8UlJQyX5jD9ERUECzgI1dZhBNPoD0
 
 ### 3.2 Supabase настройки
 ```
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your_anon_key_here
+SUPABASE_URL=https://acadfirvavgabutlxdvx.supabase.co
+SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjYWRmaXJ2YXZnYWJ1dGx4ZHZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg2MDM3ODcsImV4cCI6MjA3NDE3OTc4N30.3k-Xo-WqasrgufysdMtrzT0BHSzmkx_pVgBJcu5_33E
 ```
 
 ### 3.3 Как получить Supabase данные
