@@ -759,9 +759,7 @@ class SimpleListeningBot:
         """Запускаем бота"""
         logger.info("Запускаем Simple Deep Listening Bot...")
         
-        # Запускаем JobQueue
-        if self.application.job_queue:
-            self.application.job_queue.start()
+        # JobQueue запускается автоматически с application.run_polling()
         
         # Для Railway используем polling с drop_pending_updates
         self.application.run_polling(
