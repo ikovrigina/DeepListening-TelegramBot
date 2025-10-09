@@ -763,7 +763,11 @@ class SimpleListeningBot:
         if self.application.job_queue:
             self.application.job_queue.start()
         
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Для Railway используем polling с drop_pending_updates
+        self.application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
 
 def main():
     """Главная функция"""
