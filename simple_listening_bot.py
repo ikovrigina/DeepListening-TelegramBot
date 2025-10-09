@@ -3,9 +3,10 @@
 Simple Deep Listening Bot - MVP версия
 
 Функциональность:
-- Утреннее напоминание в 8:00
-- 1 минута прослушивания
+- Постоянная практика слушания (в любое время)
+- Пользователь контролирует время записи
 - Вопрос "Что ты услышал?"
+- Непрерывный цикл: после ответа можно начать новую практику
 - Сохранение ответа (текст или аудио)
 """
 
@@ -49,8 +50,14 @@ class SimpleListeningBot:
             'Prefer': 'return=minimal'
         }
         
-        # Создаем приложение бота
+        # Создаем приложение бота с JobQueue
         self.application = Application.builder().token(self.bot_token).build()
+        
+        # Инициализируем JobQueue для таймеров
+        from telegram.ext import JobQueue
+        if not self.application.job_queue:
+            self.application.job_queue = JobQueue()
+            self.application.job_queue.set_application(self.application)
         
         # Добавляем обработчики
         self.setup_handlers()
@@ -68,6 +75,9 @@ class SimpleListeningBot:
         # Голосовые сообщения
         self.application.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
         
+        # Фотографии
+        self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        
         # Текстовые сообщения
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
     
@@ -81,17 +91,15 @@ class SimpleListeningBot:
         welcome_text = """
 🎧 Добро пожаловать в Deep Listening Bot!
 
-Я помогу вам развить практику осознанного слушания.
+Приглашаю тебя начать твою практику слушания прямо сейчас.
 
-🌅 Каждое утро в 8:00 я буду напоминать вам:
-• Послушать мир вокруг 1 минуту
-• Поделиться тем, что вы услышали
+Я помогу тебе развить практику осознанного слушания.
 
-Готовы начать прямо сейчас?
+Готов начать прямо сейчас?
         """
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎧 Начать практику", callback_data="start_practice")],
+            [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
             [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
             [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
         ])
@@ -135,18 +143,21 @@ class SimpleListeningBot:
 🎧 Начинаем практику глубокого слушания!
 
 📍 Найдите удобное место
-👂 Закройте глаза или сосредоточьтесь
-⏰ Слушайте звуки вокруг вас ровно 1 минуту
-
-Я напомню, когда время выйдет.
-Нажмите "Готов", когда будете готовы начать.
+📱 Нажми и зафиксируй кнопку записи голосового сообщения
+👂 Расслабься, сделай 3 глубоких вдоха и прикрой глаза
+⏰ Слушай все звуки вокруг столько, сколько захочется
             """
             
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Готов начать", callback_data="ready_to_listen")]
-            ])
+            msg = await update.message.reply_text(text)
             
-            await update.message.reply_text(text, reply_markup=keyboard)
+            # Создаем фейковый query для start_timer
+            class FakeQuery:
+                def __init__(self, message, user):
+                    self.message = message
+                    self.from_user = user
+            
+            fake_query = FakeQuery(msg, update.effective_user)
+            await self.start_timer(fake_query, context)
         else:
             await update.message.reply_text("Произошла ошибка. Попробуйте еще раз.")
     
@@ -182,8 +193,6 @@ class SimpleListeningBot:
         
         if query.data == "start_practice":
             await self.start_listening_from_callback(query, context)
-        elif query.data == "ready_to_listen":
-            await self.start_timer(query, context)
         elif query.data == "show_stats":
             await self.show_stats_from_callback(query, context)
         elif query.data == "how_it_works":
@@ -202,77 +211,177 @@ class SimpleListeningBot:
 🎧 Начинаем практику глубокого слушания!
 
 📍 Найдите удобное место
-👂 Закройте глаза или сосредоточьтесь  
-⏰ Слушайте звуки вокруг вас ровно 1 минуту
-
-Нажмите "Готов", когда будете готовы начать.
+📱 Нажми и зафиксируй кнопку записи голосового сообщения
+👂 Расслабься, сделай 3 глубоких вдоха и прикрой глаза
+⏰ Слушай все звуки вокруг столько, сколько захочется
             """
             
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Готов начать", callback_data="ready_to_listen")]
-            ])
+            await query.edit_message_text(text)
             
-            await query.edit_message_text(text, reply_markup=keyboard)
+            # Сразу запускаем таймер
+            await self.start_timer(query, context)
     
     async def start_timer(self, query, context):
-        """Запускаем таймер на 1 минуту"""
-        text = """
-🎧 Практика началась!
-
-👂 Слушайте звуки вокруг вас...
-⏰ Осталось: 1 минута
-
-Сосредоточьтесь на том, что слышите прямо сейчас.
-        """
-        
-        await query.edit_message_text(text)
-        
-        # Запускаем таймер на 60 секунд
-        context.job_queue.run_once(
-            self.timer_finished, 
-            60, 
+        """Начинаем практику с пользовательским контролем времени"""
+        timer_msg = await context.bot.send_message(
             chat_id=query.message.chat_id,
-            user_id=query.from_user.id,
-            data={'session_id': context.user_data.get('current_session')}
+            text="🎧 Практика идет...\n\n"
+                 "👂 Слушай звуки вокруг ...\n"
+                 "⏰ Время: 00:00"
         )
-    
-    async def timer_finished(self, context: ContextTypes.DEFAULT_TYPE):
-        """Таймер закончился - задаем вопрос"""
-        chat_id = context.job.chat_id
-        user_id = context.job.user_id
         
-        text = """
-⏰ Время вышло!
-
-🤔 Что вы услышали?
-
-Поделитесь своими впечатлениями:
-• Напишите текстом
-• Или запишите голосовое сообщение
-        """
-        
-        # Сохраняем в контексте, что ждем ответ на вопрос
+        # Отмечаем, что пользователь должен записывать
         if 'user_sessions' not in context.bot_data:
             context.bot_data['user_sessions'] = {}
         
-        context.bot_data['user_sessions'][user_id] = {
-            'session_id': context.job.data['session_id'],
-            'waiting_for_answer': True
-        }
+        user_id = query.from_user.id
+        if user_id not in context.bot_data['user_sessions']:
+            context.bot_data['user_sessions'][user_id] = {}
+        
+        context.bot_data['user_sessions'][user_id].update({
+            'should_be_recording': True,
+            'session_id': context.user_data.get('current_session'),
+            'start_time': datetime.now(),
+            'timer_message_id': timer_msg.message_id,
+            'instruction_message_id': None
+        })
+        
+        # Запускаем визуальный таймер (обновляется каждые 15 секунд)
+        context.job_queue.run_repeating(
+            self.update_visual_timer,
+            interval=15,
+            first=15,
+            chat_id=query.message.chat_id,
+            user_id=query.from_user.id,
+            data={'session_id': context.user_data.get('current_session')},
+            name=f"timer_{user_id}"
+        )
+    
+    async def update_visual_timer(self, context: ContextTypes.DEFAULT_TYPE):
+        """Обновляем визуальный таймер каждые 15 секунд"""
+        chat_id = context.job.chat_id
+        user_id = context.job.user_id
+        
+        user_session = context.bot_data.get('user_sessions', {}).get(user_id, {})
+        
+        # Если пользователь больше не записывает, останавливаем таймер
+        if not user_session.get('should_be_recording'):
+            context.job.schedule_removal()
+            return
+            
+        start_time = user_session.get('start_time')
+        if not start_time:
+            return
+            
+        # Вычисляем прошедшее время
+        elapsed = datetime.now() - start_time
+        minutes = int(elapsed.total_seconds() // 60)
+        seconds = int(elapsed.total_seconds() % 60)
+        
+        # Обновляем сообщение с таймером
+        timer_message_id = user_session.get('timer_message_id')
+        if timer_message_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=timer_message_id,
+                    text=f"🎧 Практика идет...\n\n"
+                         f"👂 Слушай звуки вокруг ...\n"
+                         f"⏰ Время: {minutes:02d}:{seconds:02d}"
+                )
+            except Exception as e:
+                # Если не удалось обновить сообщение, продолжаем
+                pass
+
+    async def recording_finished(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Пользователь закончил запись - переходим к вопросу"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        # Останавливаем таймер
+        current_jobs = context.job_queue.get_jobs_by_name(f"timer_{user_id}")
+        for job in current_jobs:
+            job.schedule_removal()
+        
+        # Обновляем финальное время
+        user_session = context.bot_data.get('user_sessions', {}).get(user_id, {})
+        start_time = user_session.get('start_time')
+        if start_time:
+            elapsed = datetime.now() - start_time
+            minutes = int(elapsed.total_seconds() // 60)
+            seconds = int(elapsed.total_seconds() % 60)
+            
+            # Обновляем сообщение с финальным временем
+            timer_message_id = user_session.get('timer_message_id')
+            if timer_message_id:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=timer_message_id,
+                        text=f"✅ Практика завершена!\n\n"
+                             f"👂 Ты слушал: {minutes:02d}:{seconds:02d}\n"
+                             f"🎙️ Аудио получено!"
+                    )
+                except Exception:
+                    pass
+        
+        # Убираем инструкцию
+        instruction_message_id = user_session.get('instruction_message_id')
+        if instruction_message_id:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=instruction_message_id)
+            except Exception:
+                pass
+        
+        # Переходим к вопросу
+        await asyncio.sleep(1)  # Небольшая пауза для плавности
+        
+        text = """
+🤔 Что ты услышал?
+
+Опиши звуки, которые заметил во время практики:
+
+📝 Напиши текстом
+🎙️ Или запиши голосовое сообщение
+Приложи фотографию, если хочешь
+        """
         
         await context.bot.send_message(chat_id=chat_id, text=text)
     
     async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик голосовых сообщений"""
         user_id = update.effective_user.id
+        file_id = update.message.voice.file_id
+        duration = update.message.voice.duration
         
-        # Проверяем, ждем ли мы ответ от этого пользователя
-        if (context.bot_data.get('user_sessions', {}).get(user_id, {}).get('waiting_for_answer')):
-            session_id = context.bot_data['user_sessions'][user_id]['session_id']
-            voice_file_id = update.message.voice.file_id
+        user_session = context.bot_data.get('user_sessions', {}).get(user_id, {})
+        
+        # Проверяем, что именно мы ждем от пользователя
+        if user_session.get('should_be_recording') and not user_session.get('waiting_for_answer'):
+            # Это аудио окружения во время практики - пользователь закончил слушать
+            session_id = user_session['session_id']
+            message_id = update.message.message_id
+            await self.save_environment_audio(session_id, file_id, duration, message_id)
             
-            # Сохраняем голосовой ответ
-            await self.save_voice_answer(session_id, voice_file_id)
+            # Отмечаем, что получили аудио окружения и практика закончена
+            context.bot_data['user_sessions'][user_id].update({
+                'received_environment_audio': True,
+                'should_be_recording': False,
+                'waiting_for_answer': True
+            })
+            
+            # Вызываем метод завершения записи
+            await self.recording_finished(update, context)
+            
+        elif user_session.get('waiting_for_answer'):
+            # Сохраняем голосовую рефлексию
+            session_id = user_session['session_id']
+            
+            # Транскрибируем аудио
+            transcription = await self.transcribe_audio(file_id)
+            
+            # Сохраняем голосовой ответ с транскрипцией
+            await self.save_voice_answer_with_transcription(session_id, file_id, transcription)
             
             # Завершаем сессию
             await self.complete_session(session_id)
@@ -280,13 +389,20 @@ class SimpleListeningBot:
             # Убираем из ожидания
             context.bot_data['user_sessions'][user_id]['waiting_for_answer'] = False
             
+            # Показываем кнопки для следующего действия (без "Мои записи")
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
+                [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
+                [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
+            ])
+            
             await update.message.reply_text(
-                "🎙️ Спасибо за ваш ответ! Практика завершена.\n\n"
-                "Увидимся завтра утром в 8:00! 🌅"
+                "🎙️ Спасибо за то, что ты поделился!",
+                reply_markup=keyboard
             )
         else:
             await update.message.reply_text(
-                "Сначала начните практику командой /listen или нажмите 🎧 Начать практику"
+                "Сначала начни практику командой /listen или нажми 🎧 Что ты слышишь теперь?"
             )
     
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -307,13 +423,60 @@ class SimpleListeningBot:
             # Убираем из ожидания
             context.bot_data['user_sessions'][user_id]['waiting_for_answer'] = False
             
+            # Показываем кнопки для следующего действия (без "Мои записи")
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
+                [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
+                [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
+            ])
+            
             await update.message.reply_text(
-                "📝 Спасибо за ваш ответ! Практика завершена.\n\n"
-                "Увидимся завтра утром в 8:00! 🌅"
+                "📝 Спасибо за то, что ты поделился!",
+                reply_markup=keyboard
             )
         else:
             await update.message.reply_text(
-                "Привет! Начните практику командой /listen или нажмите 🎧 Начать практику"
+                "Привет! Начни практику командой /listen или нажми 🎧 Что ты слышишь теперь?"
+            )
+    
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик фотографий"""
+        user_id = update.effective_user.id
+        
+        # Проверяем, ждем ли мы ответ от этого пользователя
+        if (context.bot_data.get('user_sessions', {}).get(user_id, {}).get('waiting_for_answer')):
+            session_id = context.bot_data['user_sessions'][user_id]['session_id']
+            
+            # Получаем file_id самой большой версии фото
+            photo = update.message.photo[-1]
+            photo_file_id = photo.file_id
+            
+            # Получаем подпись к фото, если есть
+            caption = update.message.caption or ""
+            
+            # Сохраняем фото и подпись
+            await self.save_photo_answer(session_id, photo_file_id, caption)
+            
+            # Завершаем сессию
+            await self.complete_session(session_id)
+            
+            # Убираем из ожидания
+            context.bot_data['user_sessions'][user_id]['waiting_for_answer'] = False
+            
+            # Показываем кнопки для следующего действия (без "Мои записи")
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
+                [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
+                [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
+            ])
+            
+            await update.message.reply_text(
+                "📸 Спасибо за то, что ты поделился!",
+                reply_markup=keyboard
+            )
+        else:
+            await update.message.reply_text(
+                "Привет! Начни практику командой /listen или нажми 🎧 Что ты слышишь теперь?"
             )
     
     async def save_voice_answer(self, session_id: str, file_id: str):
@@ -335,6 +498,31 @@ class SimpleListeningBot:
         except Exception as e:
             logger.error(f"Ошибка при сохранении голосового ответа: {e}")
     
+    async def save_voice_answer_with_transcription(self, session_id: str, file_id: str, transcription: str):
+        """Сохраняем голосовой ответ с транскрипцией"""
+        update_data = {
+            'what_heard_audio_file_id': file_id,
+            'reflection_audio_file_id': file_id,
+            'reflection_transcription': transcription,
+            'what_heard': transcription,  # Дублируем в старое поле для совместимости
+            'status': 'completed',
+            'completed_at': datetime.now().isoformat()
+        }
+        
+        api_url = f"{self.supabase_url}/rest/v1/listening_sessions?id=eq.{session_id}"
+        
+        try:
+            response = requests.patch(api_url, headers=self.headers, data=json.dumps(update_data))
+            if response.status_code == 204:
+                logger.info(f"Голосовой ответ с транскрипцией сохранен для сессии {session_id}")
+                
+                # Также сохраняем в таблицу audio_files
+                await self.save_audio_metadata(session_id, file_id, 'reflection')
+            else:
+                logger.error(f"Ошибка сохранения голосового ответа с транскрипцией: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении голосового ответа с транскрипцией: {e}")
+    
     async def save_text_answer(self, session_id: str, text: str):
         """Сохраняем текстовый ответ"""
         update_data = {
@@ -353,6 +541,26 @@ class SimpleListeningBot:
                 logger.error(f"Ошибка сохранения текстового ответа: {response.status_code}")
         except Exception as e:
             logger.error(f"Ошибка при сохранении текстового ответа: {e}")
+    
+    async def save_photo_answer(self, session_id: str, photo_file_id: str, caption: str):
+        """Сохраняем фото с подписью"""
+        update_data = {
+            'photo_file_id': photo_file_id,
+            'what_heard_text': caption if caption else "[Фото без подписи]",
+            'status': 'completed',
+            'completed_at': datetime.now().isoformat()
+        }
+        
+        api_url = f"{self.supabase_url}/rest/v1/listening_sessions?id=eq.{session_id}"
+        
+        try:
+            response = requests.patch(api_url, headers=self.headers, data=json.dumps(update_data))
+            if response.status_code == 204:
+                logger.info(f"Фото с подписью сохранено для сессии {session_id}")
+            else:
+                logger.error(f"Ошибка сохранения фото: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении фото: {e}")
     
     async def complete_session(self, session_id: str):
         """Завершаем сессию"""
@@ -375,7 +583,9 @@ class SimpleListeningBot:
         """
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎧 Начать практику", callback_data="start_practice")]
+            [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
+            [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
+            [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
         ])
         
         await update.message.reply_text(text, reply_markup=keyboard)
@@ -396,7 +606,9 @@ class SimpleListeningBot:
         """
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎧 Начать практику", callback_data="start_practice")]
+            [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
+            [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
+            [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
         ])
         
         await query.edit_message_text(text, reply_markup=keyboard)
@@ -406,23 +618,25 @@ class SimpleListeningBot:
         text = """
 ℹ️ Как работает Deep Listening Bot:
 
-🌅 **Утреннее напоминание**
-Каждый день в 8:00 утра я пришлю вам напоминание
+🎧 **Практика слушания**  
+Найди удобное место и слушай звуки вокруг
 
-🎧 **1 минута слушания**  
-Найдите удобное место и слушайте звуки вокруг
+🤔 **Поделись опытом**
+Расскажи, что услышал - текстом или голосом
 
-🤔 **Поделитесь опытом**
-Расскажите, что услышали - текстом или голосом
+🔄 **Непрерывный цикл**
+После каждого ответа я приглашаю тебя начать новую практику
 
-📊 **Отслеживайте прогресс**
-Смотрите статистику ваших практик
+📊 **Отслеживай прогресс**
+Смотри статистику твоих практик
 
 Это простая, но мощная практика осознанности! 🧘‍♀️
         """
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎧 Попробовать сейчас", callback_data="start_practice")]
+            [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
+            [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
+            [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
         ])
         
         await query.edit_message_text(text, reply_markup=keyboard)
@@ -461,55 +675,93 @@ class SimpleListeningBot:
             'last_session_date': None
         }
     
-    async def send_morning_reminders(self):
-        """Отправляем утренние напоминания (будет вызываться по расписанию)"""
-        # Получаем всех пользователей с включенными напоминаниями
-        api_url = f"{self.supabase_url}/rest/v1/listening_users?morning_reminder_enabled=eq.true&select=telegram_user_id,first_name"
+    async def prompt_environment_recording(self, query, context):
+        """Предлагаем записать аудио окружения"""
+        text = """
+🎙️ Запись звуков окружения
+
+Отправьте голосовое сообщение, чтобы записать звуки, которые вы слышите прямо сейчас.
+
+Это поможет вам позже вспомнить атмосферу момента!
+        """
+        
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=text
+        )
+        
+        # Отмечаем, что ждем аудио окружения
+        if 'user_sessions' not in context.bot_data:
+            context.bot_data['user_sessions'] = {}
+        
+        user_id = query.from_user.id
+        if user_id not in context.bot_data['user_sessions']:
+            context.bot_data['user_sessions'][user_id] = {}
+        
+        context.bot_data['user_sessions'][user_id]['waiting_for_environment_audio'] = True
+        context.bot_data['user_sessions'][user_id]['session_id'] = context.user_data.get('current_session')
+    
+    async def save_environment_audio(self, session_id: str, file_id: str, duration: int = None, message_id: int = None):
+        """Сохраняем аудио окружения"""
+        update_data = {
+            'environment_audio_file_id': file_id
+        }
+        
+        if duration:
+            update_data['session_duration_seconds'] = duration
+        
+        if message_id:
+            update_data['environment_audio_message_id'] = message_id
+        
+        api_url = f"{self.supabase_url}/rest/v1/listening_sessions?id=eq.{session_id}"
         
         try:
-            response = requests.get(api_url, headers=self.headers)
-            if response.status_code == 200:
-                users = response.json()
+            response = requests.patch(api_url, headers=self.headers, data=json.dumps(update_data))
+            if response.status_code == 204:
+                logger.info(f"Аудио окружения сохранено для сессии {session_id}")
                 
-                for user in users:
-                    user_id = user['telegram_user_id']
-                    first_name = user['first_name'] or 'друг'
-                    
-                    text = f"""
-🌅 Доброе утро, {first_name}!
-
-Время для утренней практики глубокого слушания.
-
-🎧 Всего 1 минута - послушайте мир вокруг вас
-🤔 Поделитесь тем, что услышали
-
-Готовы начать день осознанно?
-                    """
-                    
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🎧 Начать практику", callback_data="start_practice")],
-                        [InlineKeyboardButton("⏰ Напомнить позже", callback_data="remind_later")]
-                    ])
-                    
-                    try:
-                        await self.application.bot.send_message(
-                            chat_id=user_id,
-                            text=text,
-                            reply_markup=keyboard
-                        )
-                        logger.info(f"Утреннее напоминание отправлено пользователю {user_id}")
-                    except Exception as e:
-                        logger.error(f"Ошибка отправки напоминания пользователю {user_id}: {e}")
-            
+                # Также сохраняем в таблицу audio_files
+                await self.save_audio_metadata(session_id, file_id, 'environment', duration)
+            else:
+                logger.error(f"Ошибка сохранения аудио окружения: {response.status_code}")
         except Exception as e:
-            logger.error(f"Ошибка при отправке утренних напоминаний: {e}")
+            logger.error(f"Ошибка при сохранении аудио окружения: {e}")
     
+    async def save_audio_metadata(self, session_id: str, file_id: str, file_type: str, duration: int = None):
+        """Сохраняем метаданные аудиофайла"""
+        audio_data = {
+            'session_id': session_id,
+            'file_type': file_type,
+            'telegram_file_id': file_id,
+            'duration_seconds': duration,
+            'created_at': datetime.now().isoformat()
+        }
+        
+        api_url = f"{self.supabase_url}/rest/v1/audio_files"
+        
+        try:
+            response = requests.post(api_url, headers=self.headers, data=json.dumps(audio_data))
+            if response.status_code in [200, 201]:
+                logger.info(f"Метаданные аудио сохранены: {file_type} для сессии {session_id}")
+            else:
+                logger.error(f"Ошибка сохранения метаданных аудио: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении метаданных аудио: {e}")
+    
+    async def transcribe_audio(self, file_id: str) -> str:
+        """Транскрибируем аудио в текст (заглушка для будущей реализации)"""
+        # TODO: Интеграция с сервисом транскрипции (OpenAI Whisper, Google Speech-to-Text, и т.д.)
+        # Пока возвращаем заглушку
+        return "[Голосовое сообщение - транскрипция будет добавлена позже]"
+
     def run(self):
         """Запускаем бота"""
         logger.info("Запускаем Simple Deep Listening Bot...")
         
-        # Планируем утренние напоминания на 8:00 каждый день
-        # (В продакшене это должно быть настроено через cron или планировщик задач)
+        # Запускаем JobQueue
+        if self.application.job_queue:
+            self.application.job_queue.start()
         
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 

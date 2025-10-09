@@ -1,1 +1,1 @@
-web: python bot/telegram_bot.py
+web: python simple_listening_bot.py
