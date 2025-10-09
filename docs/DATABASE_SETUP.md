@@ -309,3 +309,4 @@ CREATE TRIGGER telegram_message_notification
 ---
 
 **База данных готова к работе! 🎉**
+

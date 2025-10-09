@@ -50,3 +50,4 @@ railway variables set SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ
 # Деплой
 railway up
 ```
+
