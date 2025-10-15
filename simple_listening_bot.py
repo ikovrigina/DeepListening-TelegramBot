@@ -114,7 +114,8 @@ class SimpleListeningBot:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
             [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
-            [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
+            [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")],
+            [InlineKeyboardButton("📚 Мои записи", callback_data="open_library")]
         ])
         
         await update.message.reply_text(welcome_text, reply_markup=keyboard)
@@ -213,6 +214,14 @@ class SimpleListeningBot:
             await self.show_stats_from_callback(query, context)
         elif query.data == "how_it_works":
             await self.show_how_it_works(query, context)
+        elif query.data == "open_library":
+            await self._render_library(
+                chat_id=query.message.chat_id,
+                user_id=query.from_user.id,
+                page=1,
+                edit_message_id=query.message.message_id,
+                context=context,
+            )
         elif query.data.startswith("lib:play:"):
             await self.library_play_audio(query, context)
         elif query.data.startswith("lib:page:"):
@@ -603,7 +612,8 @@ class SimpleListeningBot:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
             [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
-            [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
+            [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")],
+            [InlineKeyboardButton("📚 Мои записи", callback_data="open_library")]
         ])
         
         await update.message.reply_text(text, reply_markup=keyboard)
@@ -626,7 +636,8 @@ class SimpleListeningBot:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎧 Что ты слышишь теперь?", callback_data="start_practice")],
             [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
-            [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")]
+            [InlineKeyboardButton("ℹ️ Как это работает", callback_data="how_it_works")],
+            [InlineKeyboardButton("📚 Мои записи", callback_data="open_library")]
         ])
         
         await query.edit_message_text(text, reply_markup=keyboard)
