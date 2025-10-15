@@ -697,10 +697,8 @@ class SimpleListeningBot:
             text_answer = s.get("what_heard_text") or ""
             keywords = self._extract_keywords(text_answer)
 
-            # Ищем аудио ответа (reflection). Если нет, попробуем окружение (environment)
-            file_id = await self._get_session_audio_file_id(s.get("id"), preferred_type="reflection")
-            if not file_id:
-                file_id = await self._get_session_audio_file_id(s.get("id"), preferred_type="environment")
+            # Берем ТОЛЬКО звук окружения (environment)
+            file_id = await self._get_session_audio_file_id(s.get("id"), preferred_type="environment")
 
             # Форматируем дату и длительность
             try:
