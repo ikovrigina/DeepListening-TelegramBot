@@ -647,7 +647,7 @@ class SimpleListeningBot:
         await query.answer()
         await self._render_library(chat_id=query.message.chat_id, user_id=user_id, page=page, edit_message_id=query.message.message_id, context=context)
 
-    async def _render_library(self, chat_id: int, user_id: int, page: int, edit_message_id: int | None, context: ContextTypes.DEFAULT_TYPE):
+    async def _render_library(self, chat_id: int, user_id: int, page: int, edit_message_id: Optional[int], context: ContextTypes.DEFAULT_TYPE):
         PAGE_SIZE = 10
         offset = (page - 1) * PAGE_SIZE
 
@@ -741,7 +741,7 @@ class SimpleListeningBot:
         except Exception:
             await context.bot.send_message(chat_id=query.message.chat_id, text="Не удалось воспроизвести аудио")
 
-    async def _get_session_audio_file_id(self, session_id: str, preferred_type: str) -> str | None:
+    async def _get_session_audio_file_id(self, session_id: str, preferred_type: str) -> Optional[str]:
         """Возвращает telegram_file_id из audio_files для указанной сессии и типа файла."""
         url = (
             f"{self.supabase_url}/rest/v1/audio_files"
