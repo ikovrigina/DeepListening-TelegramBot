@@ -202,7 +202,10 @@ class SimpleListeningBot:
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатий на кнопки"""
         query = update.callback_query
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception:
+            pass
         
         if query.data == "start_practice":
             await self.start_listening_from_callback(query, context)
@@ -644,7 +647,10 @@ class SimpleListeningBot:
                 page = 1
         except Exception:
             page = 1
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception:
+            pass
         await self._render_library(chat_id=query.message.chat_id, user_id=user_id, page=page, edit_message_id=query.message.message_id, context=context)
 
     async def _render_library(self, chat_id: int, user_id: int, page: int, edit_message_id: Optional[int], context: ContextTypes.DEFAULT_TYPE):
@@ -679,6 +685,11 @@ class SimpleListeningBot:
             return
 
         # Формируем список с кнопками проигрывания
+        # Подготовим хранилище коротких токенов для callback data
+        if 'lib_tokens' not in context.bot_data:
+            context.bot_data['lib_tokens'] = {}
+        lib_tokens = context.bot_data['lib_tokens']
+
         rows = []
         for s in sessions:
             created_at = s.get("created_at")
@@ -708,7 +719,11 @@ class SimpleListeningBot:
                 label = label[:61] + "…"
 
             if file_id:
-                rows.append([InlineKeyboardButton(f"▶️ {label}", callback_data=f"lib:play:{file_id}")])
+                # Генерируем короткий токен вместо длинного file_id (ограничение 64 байта)
+                import uuid
+                token = uuid.uuid4().hex[:32]
+                lib_tokens[token] = {"file_id": file_id, "user_id": user_id}
+                rows.append([InlineKeyboardButton(f"▶️ {label}", callback_data=f"lib:play:{token}")])
             else:
                 rows.append([InlineKeyboardButton(f"📝 {label}", callback_data=f"lib:page:{page}")])
 
@@ -724,18 +739,39 @@ class SimpleListeningBot:
         keyboard = InlineKeyboardMarkup(rows)
         header = "📚 Мои записи"
         if edit_message_id:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=header, reply_markup=keyboard)
+            try:
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=header, reply_markup=keyboard)
+            except Exception:
+                # В случае "Message is not modified" просто игнорируем
+                pass
         else:
             await context.bot.send_message(chat_id=chat_id, text=header, reply_markup=keyboard)
 
     async def library_play_audio(self, query, context):
         """Проигрываем выбранный файл по file_id."""
         try:
-            file_id = query.data.split(":")[2]
+            token = query.data.split(":")[2]
         except Exception:
-            await query.answer()
+            try:
+                await query.answer()
+            except Exception:
+                pass
             return
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
+        # Разрешаем токен в file_id
+        file_id = None
+        meta = context.bot_data.get('lib_tokens', {}).get(token)
+        if isinstance(meta, dict):
+            file_id = meta.get('file_id')
+
+        if not file_id:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="Ссылка на аудио устарела. Обновите список /library")
+            return
+
         try:
             await context.bot.send_voice(chat_id=query.message.chat_id, voice=file_id)
         except Exception:
