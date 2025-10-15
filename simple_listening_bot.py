@@ -80,6 +80,7 @@ class SimpleListeningBot:
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("listen", self.start_listening))
         self.application.add_handler(CommandHandler("stats", self.show_stats))
+        self.application.add_handler(CommandHandler("library", self.show_library))
         
         # Callback кнопки
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
@@ -209,6 +210,10 @@ class SimpleListeningBot:
             await self.show_stats_from_callback(query, context)
         elif query.data == "how_it_works":
             await self.show_how_it_works(query, context)
+        elif query.data.startswith("lib:play:"):
+            await self.library_play_audio(query, context)
+        elif query.data.startswith("lib:page:"):
+            await self.show_library_from_callback(query, context)
     
     async def start_listening_from_callback(self, query, context):
         """Начинаем прослушивание из callback"""
@@ -622,6 +627,158 @@ class SimpleListeningBot:
         ])
         
         await query.edit_message_text(text, reply_markup=keyboard)
+
+    # ===== Library (список записей) =====
+    async def show_library(self, update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
+        """Показываем список записей пользователя."""
+        user_id = update.effective_user.id
+        await self._render_library(chat_id=update.effective_chat.id, user_id=user_id, page=page, edit_message_id=None, context=context)
+
+    async def show_library_from_callback(self, query, context):
+        """Показываем библиотеку из callback с пагинацией."""
+        user_id = query.from_user.id
+        try:
+            parts = query.data.split(":")  # lib:page:<n>
+            page = int(parts[2]) if len(parts) > 2 else 1
+            if page < 1:
+                page = 1
+        except Exception:
+            page = 1
+        await query.answer()
+        await self._render_library(chat_id=query.message.chat_id, user_id=user_id, page=page, edit_message_id=query.message.message_id, context=context)
+
+    async def _render_library(self, chat_id: int, user_id: int, page: int, edit_message_id: int | None, context: ContextTypes.DEFAULT_TYPE):
+        PAGE_SIZE = 10
+        offset = (page - 1) * PAGE_SIZE
+
+        # Загружаем сессии пользователя
+        sessions_url = (
+            f"{self.supabase_url}/rest/v1/listening_sessions"
+            f"?user_id=eq.{user_id}&select=id,created_at,session_duration_seconds,what_heard_text"
+            f"&order=created_at.desc&limit={PAGE_SIZE}&offset={offset}"
+        )
+        try:
+            resp = requests.get(sessions_url, headers=self.headers)
+            if resp.status_code != 200:
+                text = "Не удалось получить список записей. Попробуйте позже."
+                if edit_message_id:
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=text)
+                else:
+                    await context.bot.send_message(chat_id=chat_id, text=text)
+                return
+            sessions = resp.json() or []
+        except Exception:
+            sessions = []
+
+        if not sessions:
+            text = "Пока нет записей. Начните практику командой /listen"
+            if edit_message_id:
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=text)
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+            return
+
+        # Формируем список с кнопками проигрывания
+        rows = []
+        for s in sessions:
+            created_at = s.get("created_at")
+            dur = s.get("session_duration_seconds") or 0
+            text_answer = s.get("what_heard_text") or ""
+            keywords = self._extract_keywords(text_answer)
+
+            # Ищем аудио ответа (reflection). Если нет, попробуем окружение (environment)
+            file_id = await self._get_session_audio_file_id(s.get("id"), preferred_type="reflection")
+            if not file_id:
+                file_id = await self._get_session_audio_file_id(s.get("id"), preferred_type="environment")
+
+            # Форматируем дату и длительность
+            try:
+                # created_at уже в ISO, берём только дату
+                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00")) if created_at else datetime.now()
+                date_str = dt.strftime("%d.%m.%Y")
+            except Exception:
+                date_str = "—"
+            mm = int(dur // 60)
+            ss = int(dur % 60)
+            dur_str = f"{mm:02d}:{ss:02d}"
+            kw_str = (", ".join(keywords)) if keywords else "—"
+
+            label = f"{date_str} · {dur_str} · {kw_str}"
+            if len(label) > 64:
+                label = label[:61] + "…"
+
+            if file_id:
+                rows.append([InlineKeyboardButton(f"▶️ {label}", callback_data=f"lib:play:{file_id}")])
+            else:
+                rows.append([InlineKeyboardButton(f"📝 {label}", callback_data=f"lib:page:{page}")])
+
+        # Пагинация
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton("◀️", callback_data=f"lib:page:{page-1}"))
+        if len(sessions) == PAGE_SIZE:
+            nav.append(InlineKeyboardButton("▶️", callback_data=f"lib:page:{page+1}"))
+        if nav:
+            rows.append(nav)
+
+        keyboard = InlineKeyboardMarkup(rows)
+        header = "📚 Мои записи"
+        if edit_message_id:
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=header, reply_markup=keyboard)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=header, reply_markup=keyboard)
+
+    async def library_play_audio(self, query, context):
+        """Проигрываем выбранный файл по file_id."""
+        try:
+            file_id = query.data.split(":")[2]
+        except Exception:
+            await query.answer()
+            return
+        await query.answer()
+        try:
+            await context.bot.send_voice(chat_id=query.message.chat_id, voice=file_id)
+        except Exception:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="Не удалось воспроизвести аудио")
+
+    async def _get_session_audio_file_id(self, session_id: str, preferred_type: str) -> str | None:
+        """Возвращает telegram_file_id из audio_files для указанной сессии и типа файла."""
+        url = (
+            f"{self.supabase_url}/rest/v1/audio_files"
+            f"?session_id=eq.{session_id}&file_type=eq.{preferred_type}&select=telegram_file_id&limit=1"
+        )
+        try:
+            r = requests.get(url, headers=self.headers)
+            if r.status_code == 200:
+                arr = r.json() or []
+                if arr:
+                    return arr[0].get("telegram_file_id")
+        except Exception:
+            pass
+        return None
+
+    def _extract_keywords(self, text: str, max_words: int = 5) -> list[str]:
+        """Очень простое извлечение ключевых слов из текста."""
+        if not text:
+            return []
+        text_l = text.lower()
+        # простой набор стоп-слов (ru/en)
+        stop = {
+            "и","в","на","что","это","как","я","мы","он","она","они","оно","а","но","или","к","у","из","за","для","по","с","со","же","ли","не","да","то","the","a","an","and","or","of","to","in","on","at","is","are","was","were","be","been","being"
+        }
+        # грубое токенизирование
+        words = [w.strip(",.;:!?()[]{}\"'»«–—") for w in text_l.split()]
+        words = [w for w in words if w and w not in stop and w.isalpha() and len(w) > 2]
+        # сохраняем порядок появления, удаляя дубликаты
+        seen = set()
+        uniq = []
+        for w in words:
+            if w not in seen:
+                seen.add(w)
+                uniq.append(w)
+            if len(uniq) >= max_words:
+                break
+        return uniq
     
     async def show_how_it_works(self, query, context):
         """Показываем как работает бот"""
