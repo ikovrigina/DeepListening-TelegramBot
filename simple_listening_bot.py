@@ -13,12 +13,14 @@ Simple Deep Listening Bot - MVP версия
 import os
 import logging
 import asyncio
+import io
 from datetime import datetime, time, timedelta
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from dotenv import load_dotenv
+from openai import OpenAI
 import requests
 import json
 
@@ -38,9 +40,19 @@ class SimpleListeningBot:
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.supabase_url = os.getenv('SUPABASE_URL')
         self.supabase_key = os.getenv('SUPABASE_ANON_KEY')
+        self.openai_api_key = os.getenv('OPENAI_API_KEY')
         
         if not all([self.bot_token, self.supabase_url, self.supabase_key]):
             raise ValueError("Не все переменные окружения установлены!")
+
+        # OpenAI клиент (не обязателен для запуска, но логируем отсутствие)
+        self.openai_client: OpenAI | None = None
+        if self.openai_api_key:
+            os.environ['OPENAI_API_KEY'] = self.openai_api_key
+            try:
+                self.openai_client = OpenAI()
+            except Exception as e:
+                logger.error(f"Не удалось инициализировать OpenAI: {e}")
         
         # Настраиваем заголовки для Supabase API
         self.headers = {
@@ -750,10 +762,41 @@ class SimpleListeningBot:
             logger.error(f"Ошибка при сохранении метаданных аудио: {e}")
     
     async def transcribe_audio(self, file_id: str) -> str:
-        """Транскрибируем аудио в текст (заглушка для будущей реализации)"""
-        # TODO: Интеграция с сервисом транскрипции (OpenAI Whisper, Google Speech-to-Text, и т.д.)
-        # Пока возвращаем заглушку
-        return "[Голосовое сообщение - транскрипция будет добавлена позже]"
+        """Транскрибируем аудио через OpenAI Whisper. Возвращаем текст или заглушку."""
+        if not self.openai_client:
+            logger.warning("OPENAI_API_KEY не задан — возвращаю заглушку транскрипции")
+            return "[Голосовое сообщение — транскрипция недоступна]"
+
+        try:
+            # 1) Получаем путь к файлу в Telegram
+            get_file_url = f"https://api.telegram.org/bot{self.bot_token}/getFile"
+            r = requests.get(get_file_url, params={"file_id": file_id}, timeout=30)
+            r.raise_for_status()
+            file_path = r.json()["result"]["file_path"]
+
+            # 2) Скачиваем файл
+            file_url = f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
+            audio_resp = requests.get(file_url, timeout=60)
+            audio_resp.raise_for_status()
+
+            audio_bytes = io.BytesIO(audio_resp.content)
+            audio_bytes.name = os.path.basename(file_path) or "voice.ogg"
+
+            # 3) Отправляем в OpenAI Whisper
+            res = self.openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_bytes,
+                response_format="text"
+            )
+
+            text = res if isinstance(res, str) else getattr(res, "text", "").strip()
+            if not text:
+                text = "[распознавание завершилось без текста]"
+
+            return text
+        except Exception as e:
+            logger.error(f"Ошибка транскрипции через OpenAI: {e}")
+            return "[Не удалось распознать аудио]"
 
     def run(self):
         """Запускаем бота"""
