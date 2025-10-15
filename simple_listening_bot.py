@@ -511,12 +511,10 @@ class SimpleListeningBot:
             logger.error(f"Ошибка при сохранении голосового ответа: {e}")
     
     async def save_voice_answer_with_transcription(self, session_id: str, file_id: str, transcription: str):
-        """Сохраняем голосовой ответ с транскрипцией"""
+        """Сохраняем голосовой ответ и текст в существующие поля сессии."""
+        # Пишем только в гарантированно существующие поля
         update_data = {
-            'what_heard_audio_file_id': file_id,
-            'reflection_audio_file_id': file_id,
-            'reflection_transcription': transcription,
-            'what_heard': transcription,  # Дублируем в старое поле для совместимости
+            'what_heard_text': transcription,
             'status': 'completed',
             'completed_at': datetime.now().isoformat()
         }
@@ -526,14 +524,14 @@ class SimpleListeningBot:
         try:
             response = requests.patch(api_url, headers=self.headers, data=json.dumps(update_data))
             if response.status_code == 204:
-                logger.info(f"Голосовой ответ с транскрипцией сохранен для сессии {session_id}")
-                
-                # Также сохраняем в таблицу audio_files
+                logger.info(f"Текст транскрипции сохранен для сессии {session_id}")
+
+                # Также сохраняем метаданные аудио-ответа отдельно
                 await self.save_audio_metadata(session_id, file_id, 'reflection')
             else:
-                logger.error(f"Ошибка сохранения голосового ответа с транскрипцией: {response.status_code}")
+                logger.error(f"Ошибка сохранения транскрипции: {response.status_code}")
         except Exception as e:
-            logger.error(f"Ошибка при сохранении голосового ответа с транскрипцией: {e}")
+            logger.error(f"Ошибка при сохранении транскрипции: {e}")
     
     async def save_text_answer(self, session_id: str, text: str):
         """Сохраняем текстовый ответ"""
